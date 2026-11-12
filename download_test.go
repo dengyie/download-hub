@@ -113,6 +113,10 @@ func TestGrantBackendFailureReleases(t *testing.T) {
 func TestGrantDeadlineNoChargeAndRetry(t *testing.T) {
 	h, c := testHandler(t)
 	key := redeemCredential(t, h, c)
+	// 预算只对阶段一（后端阻塞→504）收紧；阶段二重试走正常成功路径，
+	// 其 acquire/finish 数据库往返必须留在预算内。20ms 在 -race + 纯 Go
+	// sqlite 的 2 核 runner 上不够 DB 本身用，会让重试自己撞 504
+	// （2026-11-12 CI 实测），与被测语义（超时不扣量、同凭证可重试）无关。
 	h.service.budget = 20 * time.Millisecond
 	h.service.backend = &fakeOL{get: func(ctx context.Context, _ string) (string, error) {
 		<-ctx.Done()
@@ -126,6 +130,7 @@ func TestGrantDeadlineNoChargeAndRetry(t *testing.T) {
 	if got.Quota != 2 {
 		t.Fatal(got.Quota)
 	}
+	h.service.budget = 8 * time.Second
 	h.service.backend = &fakeOL{}
 	if w = postForm(h.routes(), "/api/grants", url.Values{"credential": {key}}); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
